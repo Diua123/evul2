@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (request.auth.token.email == 'juniordiua@gmail.com' || request.auth.token.email == 'diuacoragem164@gmail.com');
+    }
+
+    function isPromotedRole() {
+      return isSignedIn() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'chefe' ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'docente' ||
+        request.auth.token.email == 'juniordiua@gmail.com' ||
+        request.auth.token.email == 'diuacoragem164@gmail.com'
+      );
+    }
+
+    // --- USERS COLLECTION ---
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
+      allow delete: if isAdmin();
+    }
+
+    // --- LIBRARY COLLECTION ---
+    match /library/{itemId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // --- SYSTEM CONFIG ---
+    match /system_config/app {
+      allow read: if true; // Allowed for everyone so slides and icons render immediately
+      allow write: if isAdmin();
+    }
+
+    // --- ANNOUNCEMENTS ---
+    match /announcements/{annId} {
+      allow read: if true; // Announcements are visible to all readers
+      allow create, update, delete: if isAdmin() || isPromotedRole();
+    }
+
+    // --- NOTIFICATIONS ---
+    match /notifications/{notifId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn(); // Allow authenticated users to create notifications for activities
+      allow update, delete: if isAdmin();
+    }
+
+    // --- POSTS ---
+    match /posts/{postId} {
+      allow read, create, update: if isSignedIn();
+      allow delete: if isSignedIn() && (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
+    // --- PUBLICATIONS ---
+    match /publications/{pubId} {
+      allow read, create, update, delete: if isSignedIn();
+    }
+
+    // --- MESSAGES ---
+    match /messages/{messageId} {
+      allow read, create, update, delete: if isSignedIn();
+    }
+  }
+}

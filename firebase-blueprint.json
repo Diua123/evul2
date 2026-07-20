@@ -1,0 +1,157 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile with roles and academic frequency year",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "photo": { "type": "string" },
+        "anoFrequencia": { "type": "number" },
+        "role": { "type": "string", "enum": ["student", "chefe", "docente"] }
+      },
+      "required": ["id", "name", "role"]
+    },
+    "LibraryItem": {
+      "title": "Library Item",
+      "description": "Ficheiro ou documento guardado na biblioteca da plataforma",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "author": { "type": "string" },
+        "category": { "type": "string" },
+        "date": { "type": "string" },
+        "description": { "type": "string" },
+        "downloadUrl": { "type": "string" }
+      },
+      "required": ["title", "author", "category", "downloadUrl"]
+    },
+    "SystemConfig": {
+      "title": "System Configuration",
+      "description": "Platform settings including custom app logo and home slides",
+      "type": "object",
+      "properties": {
+        "logoUrl": { "type": "string" },
+        "slides": {
+          "type": "array"
+        }
+      }
+    },
+    "Announcement": {
+      "title": "Announcement Notice",
+      "description": "System bulletins and notices created by the administrator",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "text": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "text", "createdAt"]
+    },
+    "SystemNotification": {
+      "title": "System Notification",
+      "description": "Global or individual alert notification triggered by the administrator",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "targetUserId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "body", "targetUserId", "createdAt"]
+    },
+    "UserPost": {
+      "title": "User Post",
+      "description": "Social feed posts shared by users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userPhoto": { "type": "string" },
+        "caption": { "type": "string" },
+        "media": { "type": "string" },
+        "mediaType": { "type": "string" },
+        "isImage": { "type": "boolean" },
+        "timestamp": { "type": "string" },
+        "likes": { "type": "number" },
+        "likedBy": { "type": "array" },
+        "comments": { "type": "array" }
+      },
+      "required": ["userId", "userName", "caption", "timestamp"]
+    },
+    "Publication": {
+      "title": "Community Publication",
+      "description": "Course-year forum publications and community posts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "content": { "type": "string" },
+        "date": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorRole": { "type": "string" }
+      },
+      "required": ["title", "category", "content", "date"]
+    },
+    "Message": {
+      "title": "Chat Message",
+      "description": "Private or general room text / media chat message",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "authorId": { "type": "string" },
+        "text": { "type": "string" },
+        "time": { "type": "number" },
+        "to": { "type": "string" },
+        "media": { "type": "string" },
+        "mediaType": { "type": "string" },
+        "fileName": { "type": "string" },
+        "replyToId": { "type": "string" }
+      },
+      "required": ["authorId", "text", "time", "to"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Database of registered students, chefes, and docentes"
+    },
+    "library/{itemId}": {
+      "schema": "LibraryItem",
+      "description": "Shared learning resource papers, syllabi, or exam timetables"
+    },
+    "system_config/app": {
+      "schema": "SystemConfig",
+      "description": "Application settings document covering logo and carousel slides"
+    },
+    "announcements/{annId}": {
+      "schema": "Announcement",
+      "description": "System notices and adverts shown on the home dashboard"
+    },
+    "notifications/{notifId}": {
+      "schema": "SystemNotification",
+      "description": "Alert alerts dispatched to all or selected users"
+    },
+    "posts/{postId}": {
+      "schema": "UserPost",
+      "description": "Feed user-generated posts and comments"
+    },
+    "publications/{pubId}": {
+      "schema": "Publication",
+      "description": "Academic course-year and department community posts"
+    },
+    "messages/{messageId}": {
+      "schema": "Message",
+      "description": "Chat conversation and forum messages"
+    }
+  }
+}
