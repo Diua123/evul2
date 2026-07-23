@@ -17,7 +17,9 @@ import {
   Smartphone,
   Save,
   LogOut,
-  BookOpen
+  BookOpen,
+  Edit3,
+  Layers
 } from 'lucide-react';
 import { storage } from '../services/storage';
 import { 
@@ -36,7 +38,7 @@ import {
 } from '../services/firebaseService';
 import { auth, isFirebaseConfigured } from '../services/firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { User, HomeSlide, Announcement, SystemNotification, SystemConfig, LibraryItem } from '../types';
+import { User, Announcement, SystemNotification, SystemConfig, LibraryItem, HomeSlide } from '../types';
 
 enum AdminTab {
   SLIDES = 'slides',
@@ -60,8 +62,19 @@ const AdminPanel: React.FC = () => {
 
   // System Config states
   const [logoUrl, setLogoUrl] = useState('up.png');
+  const [bannerBadge, setBannerBadge] = useState('Plataforma Académica Oficial');
+  const [bannerTitle, setBannerTitle] = useState('Educação Visual & Artes');
+  const [bannerSubtitle, setBannerSubtitle] = useState('Bem-vindo ao espaço digital do departamento. Aceda a trabalhos de investigação, planos analíticos, avisos e comunique com estudantes e docentes.');
+  const [bannerBgUrl, setBannerBgUrl] = useState('');
+  
+  // Slides states
   const [slides, setSlides] = useState<HomeSlide[]>([]);
-  const [newSlide, setNewSlide] = useState({ imageUrl: '', title: '', description: '' });
+  const [newSlide, setNewSlide] = useState<{ title: string; description: string; imageUrl: string }>({
+    title: '',
+    description: '',
+    imageUrl: ''
+  });
+  const [editingSlideId, setEditingSlideId] = useState<string | null>(null);
 
   // Users states
   const [usersList, setUsersList] = useState<User[]>([]);
@@ -100,7 +113,11 @@ const AdminPanel: React.FC = () => {
     // Load System Config
     const unsubConfig = subscribeToSystemConfig((config) => {
       setLogoUrl(config.logoUrl || 'up.png');
-      setSlides(config.slides || []);
+      if (config.bannerBadge !== undefined) setBannerBadge(config.bannerBadge);
+      if (config.bannerTitle !== undefined) setBannerTitle(config.bannerTitle);
+      if (config.bannerSubtitle !== undefined) setBannerSubtitle(config.bannerSubtitle);
+      if (config.bannerBgUrl !== undefined) setBannerBgUrl(config.bannerBgUrl);
+      if (config.slides) setSlides(config.slides);
     });
 
     // Load Announcements
@@ -137,8 +154,8 @@ const AdminPanel: React.FC = () => {
     setLoading(true);
 
     const isAllowedEmail = email.trim() === 'juniordiua@gmail.com' || email.trim() === 'diuacoragem164@gmail.com';
-    if (!isAllowedEmail || password !== 'admin2026') {
-      setError('E-mail ou palavra-passe incorretos para o Administrador.');
+    if (!isAllowedEmail) {
+      setError('E-mail não autorizado para o Administrador.');
       setLoading(false);
       return;
     }
@@ -147,15 +164,19 @@ const AdminPanel: React.FC = () => {
       if (isFirebaseConfigured) {
         // Attempt normal Auth flow
         try {
-          await signInWithEmailAndPassword(auth, email, password);
+          await signInWithEmailAndPassword(auth, email.trim(), password);
         } catch (authErr: any) {
-          // If the user does not exist in Auth but we explicitly need it
-          if (authErr.code === 'auth/user-not-found' || authErr.code === 'auth/invalid-credential') {
+          // If the password was incorrect or user not found, and they typed 'admin2026',
+          // let's try to register them if they don't exist yet, or notify about wrong password.
+          if (password === 'admin2026' && (authErr.code === 'auth/user-not-found' || authErr.code === 'auth/invalid-credential')) {
             try {
-              await createUserWithEmailAndPassword(auth, email, password);
+              await createUserWithEmailAndPassword(auth, email.trim(), password);
             } catch (createErr) {
               console.error("Could not register admin in Firebase Auth:", createErr);
+              throw authErr;
             }
+          } else {
+            throw new Error("Palavra-passe incorreta ou e-mail inválido para esta conta de administrador.");
           }
         }
       }
@@ -190,51 +211,13 @@ const AdminPanel: React.FC = () => {
 
   // --- ACTIONS ---
 
-  // 1. Logo update
+  // 1. System Config update (Logo & Banner)
   const handleSaveLogo = async () => {
     try {
-      await updateSystemConfigFB({ logoUrl, slides });
-      showSuccessMessage('Ícone do sistema atualizado com sucesso!');
+      await updateSystemConfigFB({ logoUrl, bannerBadge, bannerTitle, bannerSubtitle, bannerBgUrl });
+      showSuccessMessage('Configurações de identidade e banner atualizadas com sucesso!');
     } catch (err) {
-      setError('Erro ao atualizar ícone.');
-    }
-  };
-
-  // 2. Add slide image
-  const handleAddSlide = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newSlide.imageUrl.trim() || !newSlide.title.trim()) {
-      setError('A imagem e o título do slide são obrigatórios.');
-      return;
-    }
-
-    const createdSlide: HomeSlide = {
-      id: 'slide_' + Date.now(),
-      imageUrl: newSlide.imageUrl,
-      title: newSlide.title,
-      description: newSlide.description
-    };
-
-    const updatedSlides = [...slides, createdSlide];
-    try {
-      await updateSystemConfigFB({ logoUrl, slides: updatedSlides });
-      setSlides(updatedSlides);
-      setNewSlide({ imageUrl: '', title: '', description: '' });
-      showSuccessMessage('Slide adicionado à tela inicial!');
-    } catch (err) {
-      setError('Erro ao adicionar slide.');
-    }
-  };
-
-  // 3. Delete slide image
-  const handleDeleteSlide = async (slideId: string) => {
-    const updatedSlides = slides.filter(s => s.id !== slideId);
-    try {
-      await updateSystemConfigFB({ logoUrl, slides: updatedSlides });
-      setSlides(updatedSlides);
-      showSuccessMessage('Slide removido da tela inicial.');
-    } catch (err) {
-      setError('Erro ao apagar slide.');
+      setError('Erro ao atualizar configurações do sistema.');
     }
   };
 
@@ -385,33 +368,147 @@ const AdminPanel: React.FC = () => {
     u.Number?.includes(userSearch)
   );
 
+  // Compress image helper to avoid Firestore 1MB document size limit
+  const compressImage = (file: File, maxWidth = 800, maxHeight = 800, quality = 0.7): Promise<string> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > maxWidth) {
+              height = Math.round((height * maxWidth) / width);
+              width = maxWidth;
+            }
+          } else {
+            if (height > maxHeight) {
+              width = Math.round((width * maxHeight) / height);
+              height = maxHeight;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(event.target?.result as string);
+            return;
+          }
+
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressedBase64 = canvas.toDataURL('image/jpeg', quality);
+          resolve(compressedBase64);
+        };
+        img.onerror = () => resolve(event.target?.result as string);
+      };
+      reader.onerror = () => resolve('');
+    });
+  };
+
   // Helper for profile picture base64 changes
-  const handleIconChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleIconChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => setLogoUrl(event.target?.result as string);
-      reader.readAsDataURL(file);
+      try {
+        const compressed = await compressImage(file, 400, 400, 0.75);
+        setLogoUrl(compressed);
+      } catch (err) {
+        console.error("Error compressing icon:", err);
+      }
     }
   };
 
-  // Helper for slide image change
-  const handleSlideImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Helper for banner background image
+  const handleBannerBgChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => setNewSlide({ ...newSlide, imageUrl: event.target?.result as string });
-      reader.readAsDataURL(file);
+      try {
+        const compressed = await compressImage(file, 1200, 600, 0.75);
+        setBannerBgUrl(compressed);
+      } catch (err) {
+        console.error("Error compressing banner bg:", err);
+      }
     }
+  };
+
+  // Helper for slide image upload
+  const handleSlideImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      try {
+        const compressed = await compressImage(file, 1200, 800, 0.75);
+        setNewSlide(prev => ({ ...prev, imageUrl: compressed }));
+      } catch (err) {
+        console.error("Error compressing slide image:", err);
+      }
+    }
+  };
+
+  // Slide actions
+  const handleSaveSlide = async () => {
+    if (!newSlide.title.trim() || !newSlide.imageUrl.trim()) {
+      setError('Por favor preencha o título e insira/carregue uma imagem para o slide.');
+      return;
+    }
+    let updatedSlides: HomeSlide[] = [];
+    if (editingSlideId) {
+      updatedSlides = slides.map(s => s.id === editingSlideId ? { ...s, ...newSlide } : s);
+      setEditingSlideId(null);
+    } else {
+      const slideItem: HomeSlide = {
+        id: Date.now().toString(),
+        title: newSlide.title.trim(),
+        description: newSlide.description.trim(),
+        imageUrl: newSlide.imageUrl.trim()
+      };
+      updatedSlides = [...slides, slideItem];
+    }
+    setSlides(updatedSlides);
+    setNewSlide({ title: '', description: '', imageUrl: '' });
+    try {
+      await updateSystemConfigFB({ slides: updatedSlides });
+      showSuccessMessage('Carrossel de slides guardado com sucesso!');
+    } catch (e) {
+      setError('Erro ao guardar carrossel de slides.');
+    }
+  };
+
+  const handleDeleteSlide = async (id: string) => {
+    const updatedSlides = slides.filter(s => s.id !== id);
+    setSlides(updatedSlides);
+    try {
+      await updateSystemConfigFB({ slides: updatedSlides });
+      showSuccessMessage('Slide removido do carrossel.');
+    } catch (e) {
+      setError('Erro ao remover slide.');
+    }
+  };
+
+  const handleEditSlide = (slide: HomeSlide) => {
+    setEditingSlideId(slide.id);
+    setNewSlide({
+      title: slide.title,
+      description: slide.description,
+      imageUrl: slide.imageUrl
+    });
   };
 
   // Helper for announcement image change
-  const handleAnnImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAnnImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => setNewAnnouncement({ ...newAnnouncement, imageUrl: event.target?.result as string });
-      reader.readAsDataURL(file);
+      try {
+        const compressed = await compressImage(file, 800, 600, 0.7);
+        setNewAnnouncement({ ...newAnnouncement, imageUrl: compressed });
+      } catch (err) {
+        console.error("Error compressing announcement:", err);
+      }
     }
   };
 
@@ -443,7 +540,7 @@ const AdminPanel: React.FC = () => {
               <input 
                 type="email" 
                 required 
-                placeholder="juniordiua@gmail.com"
+                placeholder=""
                 className="w-full p-4 rounded-3xl border border-slate-800 bg-slate-900 text-white text-sm focus:ring-2 focus:ring-amber-500 shadow-inner placeholder-slate-600"
                 value={email} 
                 onChange={(e) => setEmail(e.target.value)} 
@@ -455,7 +552,7 @@ const AdminPanel: React.FC = () => {
               <input 
                 type="password" 
                 required 
-                placeholder="••••••••"
+                placeholder=""
                 className="w-full p-4 rounded-3xl border border-slate-800 bg-slate-900 text-white text-sm focus:ring-2 focus:ring-amber-500 shadow-inner placeholder-slate-600"
                 value={password} 
                 onChange={(e) => setPassword(e.target.value)} 
@@ -530,7 +627,7 @@ const AdminPanel: React.FC = () => {
             }`}
           >
             <ImageIcon size={14} />
-            Design & Slides
+            Logótipo & Identidade
           </button>
 
           <button 
@@ -627,126 +724,206 @@ const AdminPanel: React.FC = () => {
                       <input 
                         type="text" 
                         className="w-full sm:flex-1 p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white focus:ring-1 focus:ring-amber-500 animate-none"
-                        placeholder="Ex: up.png ou link para Imgur/etc"
+                        placeholder=""
                         value={logoUrl}
                         onChange={(e) => setLogoUrl(e.target.value)}
                       />
-                      <button 
-                        onClick={handleSaveLogo}
-                        className="w-full sm:w-auto bg-amber-600 hover:bg-amber-500 text-white px-5 py-3.5 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-colors shrink-0"
-                      >
-                        <Save size={14} />
-                        Guardar
-                      </button>
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Homepage slide images management */}
+              {/* Banner Content Management */}
               <div className="bg-slate-900/60 border border-slate-800 rounded-4xl p-5 md:p-6 space-y-6">
                 <div>
                   <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
                     <ImageIcon size={16} className="text-amber-500" />
-                    Slides em Carrossel da Tela Inicial
+                    Conteúdo do Banner Principal
                   </h3>
-                  <p className="text-xs text-slate-400 mt-1">Estes slides de imagens vão substituir o painel anterior de "Acessos Rápidos", oferecendo um aspeto mais imersivo e artístico na entrada da app.</p>
+                  <p className="text-xs text-slate-400 mt-1">Edite o texto, mensagem de boas-vindas e fundo do banner principal exibido na tela inicial.</p>
                 </div>
 
-                {/* List slides */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {slides.length === 0 ? (
-                    <div className="col-span-full border border-dashed border-slate-800 rounded-3xl p-8 text-center text-slate-500">
-                      <ImageIcon size={32} className="mx-auto mb-2 opacity-30" />
-                      <span className="text-xs font-bold uppercase tracking-widest">Nenhum slide adicionado</span>
-                    </div>
-                  ) : (
-                    slides.map((slide) => (
-                      <div key={slide.id} className="bg-slate-950 rounded-3xl p-4 border border-slate-800/80 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
-                        <div className="flex items-center gap-3 w-full sm:w-auto">
-                          {slide.imageUrl ? (
-                            <img src={slide.imageUrl} alt={slide.title} className="w-16 h-16 sm:w-20 sm:h-20 object-cover rounded-2xl bg-slate-900 border border-slate-800 shrink-0" />
-                          ) : (
-                            <div className="w-16 h-16 sm:w-20 sm:h-20 bg-slate-900 border border-slate-800 rounded-2xl flex items-center justify-center shrink-0">
-                              <ImageIcon size={20} className="text-slate-600" />
-                            </div>
-                          )}
-                          <div className="flex-1 min-w-0 block sm:hidden">
-                            <h4 className="text-xs font-black uppercase text-white truncate">{slide.title}</h4>
-                            <p className="text-[10px] text-slate-400 line-clamp-2 mt-1 leading-relaxed">{slide.description}</p>
-                          </div>
-                        </div>
-                        <div className="flex-1 min-w-0 hidden sm:block">
-                          <h4 className="text-xs font-black uppercase text-white truncate">{slide.title}</h4>
-                          <p className="text-[10px] text-slate-400 line-clamp-2 mt-1 leading-relaxed">{slide.description}</p>
-                        </div>
-                        <button 
-                          onClick={() => handleDeleteSlide(slide.id)}
-                          className="w-full sm:w-auto p-2.5 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl hover:bg-red-500/20 transition-all flex items-center justify-center gap-2 shrink-0 self-stretch sm:self-center"
-                        >
-                          <Trash2 size={14} />
-                          <span className="sm:hidden text-[9px] font-black uppercase tracking-wider">Remover Slide</span>
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                {/* Add new slide */}
-                <form onSubmit={handleAddSlide} className="border-t border-slate-800/80 pt-6 space-y-4">
-                  <p className="text-xs font-black uppercase tracking-wider text-amber-500">Adicionar Novo Slide</p>
-                  
+                <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Título do Slide</label>
+                      <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Etiqueta / Destaque (Badge)</label>
                       <input 
                         type="text" 
-                        required
-                        className="w-full p-3 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white"
-                        placeholder="Ex: Exposição de Belas Artes"
+                        className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white focus:ring-1 focus:ring-amber-500"
+                        placeholder="Ex: Plataforma Académica Oficial"
+                        value={bannerBadge}
+                        onChange={(e) => setBannerBadge(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Título do Banner</label>
+                      <input 
+                        type="text" 
+                        className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white focus:ring-1 focus:ring-amber-500"
+                        placeholder="Ex: Educação Visual & Artes"
+                        value={bannerTitle}
+                        onChange={(e) => setBannerTitle(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Conteúdo / Descrição do Banner (Texto Completo)</label>
+                    <textarea 
+                      rows={4}
+                      className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white resize-y focus:ring-1 focus:ring-amber-500 leading-relaxed"
+                      placeholder="Escreva a mensagem completa..."
+                      value={bannerSubtitle}
+                      onChange={(e) => setBannerSubtitle(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Imagem de Fundo do Banner (Opcional - URL ou Ficheiro)</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        className="flex-1 p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white"
+                        placeholder="Deixe em branco para manter o fundo em gradiente azul"
+                        value={bannerBgUrl}
+                        onChange={(e) => setBannerBgUrl(e.target.value)}
+                      />
+                      <label className="bg-slate-900 hover:bg-slate-850 border border-slate-800 px-4 rounded-2xl cursor-pointer text-slate-300 hover:text-white flex items-center justify-center transition-colors shrink-0">
+                        <Upload size={14} className="mr-2" />
+                        <span className="text-[10px] font-bold uppercase">Carregar</span>
+                        <input type="file" accept="image/*" onChange={handleBannerBgChange} className="hidden" />
+                      </label>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={handleSaveLogo}
+                    className="w-full bg-amber-600 hover:bg-amber-500 active:scale-[0.99] transition-all text-slate-950 font-black text-xs uppercase tracking-wider py-4 rounded-2xl shadow-xl flex items-center justify-center gap-2 mt-4"
+                  >
+                    <Save size={16} />
+                    Guardar Alterações da Identidade & Banner
+                  </button>
+                </div>
+              </div>
+
+              {/* Carrossel de Slides Management */}
+              <div className="bg-slate-900/60 border border-slate-800 rounded-4xl p-5 md:p-6 space-y-6">
+                <div>
+                  <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
+                    <Layers size={16} className="text-amber-500" />
+                    Gestão do Carrossel de Slides (Destaques da Página Inicial)
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">Adicione, edite ou remova os slides rotativos de destaques exibidos na página inicial da plataforma.</p>
+                </div>
+
+                {/* Lista de Slides Atuais */}
+                {slides.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {slides.map((slide, idx) => (
+                      <div key={slide.id || idx} className="bg-slate-950 border border-slate-800 rounded-3xl p-4 flex gap-4 items-center relative group">
+                        <img 
+                          src={slide.imageUrl} 
+                          alt={slide.title} 
+                          className="w-20 h-20 object-cover rounded-2xl border border-slate-800 shrink-0" 
+                        />
+                        <div className="flex-1 min-w-0 pr-12">
+                          <span className="text-[9px] font-black uppercase text-amber-400 tracking-wider">Slide #{idx + 1}</span>
+                          <h4 className="text-xs font-black text-white truncate">{slide.title}</h4>
+                          <p className="text-[11px] text-slate-400 line-clamp-2 mt-0.5">{slide.description}</p>
+                        </div>
+                        <div className="absolute right-3 top-3 flex flex-col gap-1">
+                          <button 
+                            onClick={() => handleEditSlide(slide)}
+                            className="p-2 rounded-xl bg-slate-900 hover:bg-amber-500 hover:text-slate-950 text-slate-400 transition-colors"
+                            title="Editar slide"
+                          >
+                            <Edit3 size={14} />
+                          </button>
+                          <button 
+                            onClick={() => handleDeleteSlide(slide.id)}
+                            className="p-2 rounded-xl bg-slate-900 hover:bg-red-500 hover:text-white text-slate-400 transition-colors"
+                            title="Remover slide"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="bg-slate-950/50 border border-dashed border-slate-800 rounded-3xl p-6 text-center text-slate-500 text-xs">
+                    Nenhum slide personalizado configurado. (A plataforma está a utilizar os slides demonstrativos padrão).
+                  </div>
+                )}
+
+                {/* Form para Adicionar/Editar Slide */}
+                <div className="bg-slate-950 border border-slate-800 rounded-3xl p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-2">
+                      <Plus size={14} className="text-amber-500" />
+                      {editingSlideId ? 'Editar Slide Seleccionado' : 'Adicionar Novo Slide ao Carrossel'}
+                    </h4>
+                    {editingSlideId && (
+                      <button 
+                        onClick={() => { setEditingSlideId(null); setNewSlide({ title: '', description: '', imageUrl: '' }); }}
+                        className="text-[10px] font-bold text-amber-400 hover:underline uppercase"
+                      >
+                        Cancelar Edição
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Título do Slide *</label>
+                      <input 
+                        type="text" 
+                        className="w-full p-3.5 bg-slate-900 border border-slate-800 rounded-2xl text-xs text-white focus:ring-1 focus:ring-amber-500"
+                        placeholder="Ex: Exposição de Artes Visuais"
                         value={newSlide.title}
                         onChange={(e) => setNewSlide({ ...newSlide, title: e.target.value })}
                       />
                     </div>
 
                     <div className="space-y-1">
-                      <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Ficheiro ou URL de Imagem</label>
+                      <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Imagem do Slide (URL ou Carregar) *</label>
                       <div className="flex gap-2">
                         <input 
                           type="text" 
-                          required
-                          className="flex-1 p-3 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white"
-                          placeholder="Ficheiro local ou URL"
+                          className="flex-1 p-3.5 bg-slate-900 border border-slate-800 rounded-2xl text-xs text-white"
+                          placeholder="https://..."
                           value={newSlide.imageUrl}
                           onChange={(e) => setNewSlide({ ...newSlide, imageUrl: e.target.value })}
                         />
-                        <label className="bg-slate-900 hover:bg-slate-800 border border-slate-800 p-3 rounded-2xl cursor-pointer text-slate-400 hover:text-white flex items-center justify-center transition-colors shrink-0">
-                          <Upload size={14} />
+                        <label className="bg-slate-900 hover:bg-slate-850 border border-slate-800 px-4 rounded-2xl cursor-pointer text-slate-300 hover:text-white flex items-center justify-center transition-colors shrink-0">
+                          <Upload size={14} className="mr-2" />
+                          <span className="text-[10px] font-bold uppercase">Ficheiro</span>
                           <input type="file" accept="image/*" onChange={handleSlideImageChange} className="hidden" />
                         </label>
                       </div>
                     </div>
+                  </div>
 
-                    <div className="col-span-full space-y-1">
-                      <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Descrição</label>
-                      <textarea 
-                        rows={2}
-                        className="w-full p-3 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white resize-none"
-                        placeholder="Insira uma descrição explicativa breve sobre o slide."
-                        value={newSlide.description}
-                        onChange={(e) => setNewSlide({ ...newSlide, description: e.target.value })}
-                      />
-                    </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Descrição / Legenda do Slide</label>
+                    <textarea 
+                      rows={2}
+                      className="w-full p-3.5 bg-slate-900 border border-slate-800 rounded-2xl text-xs text-white resize-y focus:ring-1 focus:ring-amber-500 leading-relaxed"
+                      placeholder="Breve descrição sobre o destaque..."
+                      value={newSlide.description}
+                      onChange={(e) => setNewSlide({ ...newSlide, description: e.target.value })}
+                    />
                   </div>
 
                   <button 
-                    type="submit"
-                    className="w-full bg-slate-900 hover:bg-slate-850 border border-slate-850 text-white py-3.5 rounded-2xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 transition-colors"
+                    onClick={handleSaveSlide}
+                    className="w-full bg-slate-850 hover:bg-amber-500 hover:text-slate-950 border border-slate-750 text-white font-black text-xs uppercase tracking-wider py-3.5 rounded-2xl transition-all shadow-lg flex items-center justify-center gap-2"
                   >
-                    <Plus size={14} />
-                    Registar Slide da Tela Inicial
+                    <Save size={14} />
+                    {editingSlideId ? 'Atualizar Slide' : 'Adicionar Slide ao Carrossel'}
                   </button>
-                </form>
+                </div>
               </div>
             </div>
           )}
@@ -762,7 +939,7 @@ const AdminPanel: React.FC = () => {
                 
                 <input 
                   type="text" 
-                  placeholder="Pesquisar por nome, email ou número..."
+                  placeholder=""
                   className="w-full sm:w-72 p-3 bg-slate-900 border border-slate-800 rounded-2xl text-xs text-white"
                   value={userSearch}
                   onChange={(e) => setUserSearch(e.target.value)}
@@ -972,7 +1149,7 @@ const AdminPanel: React.FC = () => {
                         type="text" 
                         required
                         className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white"
-                        placeholder="Ex: Alerta de Calendário de Provas"
+                        placeholder=""
                         value={newNotification.title}
                         onChange={(e) => setNewNotification({ ...newNotification, title: e.target.value })}
                       />
@@ -985,7 +1162,7 @@ const AdminPanel: React.FC = () => {
                       rows={3}
                       required
                       className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white resize-none"
-                      placeholder="Escreva a mensagem curta que será exibida ao utilizador..."
+                      placeholder=""
                       value={newNotification.body}
                       onChange={(e) => setNewNotification({ ...newNotification, body: e.target.value })}
                     />
@@ -1023,7 +1200,7 @@ const AdminPanel: React.FC = () => {
                         type="text" 
                         required
                         className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white"
-                        placeholder="Ex: Início das Inscrições para Oficinas Artísticas"
+                        placeholder=""
                         value={newAnnouncement.title}
                         onChange={(e) => setNewAnnouncement({ ...newAnnouncement, title: e.target.value })}
                       />
@@ -1035,7 +1212,7 @@ const AdminPanel: React.FC = () => {
                         <input 
                           type="text" 
                           className="flex-1 p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white"
-                          placeholder="Ficheiro local ou URL externo"
+                          placeholder=""
                           value={newAnnouncement.imageUrl}
                           onChange={(e) => setNewAnnouncement({ ...newAnnouncement, imageUrl: e.target.value })}
                         />
@@ -1053,7 +1230,7 @@ const AdminPanel: React.FC = () => {
                       rows={3}
                       required
                       className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white resize-none"
-                      placeholder="Detalhes completos sobre o anúncio que serão lidos pelo público..."
+                      placeholder=""
                       value={newAnnouncement.text}
                       onChange={(e) => setNewAnnouncement({ ...newAnnouncement, text: e.target.value })}
                     />
@@ -1124,7 +1301,7 @@ const AdminPanel: React.FC = () => {
                         type="text" 
                         required
                         className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white focus:ring-1 focus:ring-amber-500"
-                        placeholder="Ex: Monografia de Educação Visual - 2026"
+                        placeholder=""
                         value={newLibraryItem.title}
                         onChange={(e) => setNewLibraryItem({ ...newLibraryItem, title: e.target.value })}
                       />
@@ -1136,7 +1313,7 @@ const AdminPanel: React.FC = () => {
                         type="text" 
                         required
                         className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white focus:ring-1 focus:ring-amber-500"
-                        placeholder="Ex: Prof. Dr. Júnior Diua"
+                        placeholder=""
                         value={newLibraryItem.author}
                         onChange={(e) => setNewLibraryItem({ ...newLibraryItem, author: e.target.value })}
                       />
@@ -1165,7 +1342,7 @@ const AdminPanel: React.FC = () => {
                           type="text" 
                           required
                           className="flex-1 p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white focus:ring-1 focus:ring-amber-500"
-                          placeholder="Ficheiro local ou URL externo"
+                          placeholder=""
                           value={newLibraryItem.downloadUrl}
                           onChange={(e) => setNewLibraryItem({ ...newLibraryItem, downloadUrl: e.target.value })}
                         />
@@ -1182,7 +1359,7 @@ const AdminPanel: React.FC = () => {
                     <textarea 
                       rows={2}
                       className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white resize-none focus:ring-1 focus:ring-amber-500"
-                      placeholder="Breve descrição ou instruções sobre como utilizar este ficheiro..."
+                      placeholder=""
                       value={newLibraryItem.description}
                       onChange={(e) => setNewLibraryItem({ ...newLibraryItem, description: e.target.value })}
                     />
@@ -1229,10 +1406,10 @@ const AdminPanel: React.FC = () => {
                               </span>
                               <span className="text-[8px] font-semibold text-slate-500 uppercase">{item.date}</span>
                             </div>
-                            <h4 className="text-xs font-black uppercase tracking-tight text-white truncate">{item.title}</h4>
+                            <h4 className="text-xs font-black uppercase tracking-tight text-white">{item.title}</h4>
                             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">Autor: {item.author}</p>
                             {item.description && (
-                              <p className="text-[10px] text-slate-500 line-clamp-1 leading-relaxed italic">{item.description}</p>
+                              <p className="text-[10px] text-slate-400 leading-relaxed italic whitespace-pre-wrap">{item.description}</p>
                             )}
                           </div>
                         </div>
