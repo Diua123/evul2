@@ -10,12 +10,19 @@ import {
   subscribeToAllLibraryItems,
   subscribeToSystemConfig,
   subscribeToAnnouncements,
-  subscribeToMyNotifications
+  subscribeToMyNotifications,
+  updateUserFB
 } from '../services/firebaseService';
 import { LanguageContext } from '../App';
 import { t } from '../services/i18n';
 import Footer from '../components/Footer';
-import { Language, HomeSlide, Announcement, SystemNotification } from '../types';
+import { Language, Announcement, SystemNotification, HomeSlide } from '../types';
+import { ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
+import { 
+  resetPushSessionTime, 
+  requestNotificationPermission, 
+  processIncomingNotifications 
+} from '../services/pushNotificationService';
 
 interface HomeProps {
   toggleTheme: () => void;
@@ -25,7 +32,6 @@ interface HomeProps {
 
 const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
   const navigate = useNavigate();
-  const [currentTutorialIndex, setCurrentTutorialIndex] = useState(0);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
   const [hasNewMessages, setHasNewMessages] = useState(false);
@@ -47,14 +53,100 @@ const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
     setDismissedNotifIds(updated);
     localStorage.setItem('dismissed_notifications', JSON.stringify(updated));
   };
+
+  // PWA Install States & Effects
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [isPwaDismissed, setIsPwaDismissed] = useState(() => {
+    return localStorage.getItem('pwa_banner_dismissed') === 'true';
+  });
+
+  useEffect(() => {
+    // Detect if already installed (standalone mode)
+    const isStandaloneMode = 
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as any).standalone === true ||
+      document.referrer.includes('android-app://');
+    setIsStandalone(isStandaloneMode);
+
+    // Detect iOS
+    const ua = window.navigator.userAgent.toLowerCase();
+    const ios = /iphone|ipad|ipod/.test(ua);
+    setIsIOS(ios);
+
+    // Listen to beforeinstallprompt
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setDeferredPrompt(null);
+        setIsInstallable(false);
+      }
+    }
+  };
+
+  const handleDismissPwaBanner = () => {
+    setIsPwaDismissed(true);
+    localStorage.setItem('pwa_banner_dismissed', 'true');
+  };
   
+  // Default fallback slides
+  const defaultSlides: HomeSlide[] = [
+    {
+      id: '1',
+      title: 'Exposição de Artes & Design',
+      description: 'Mostra anual de trabalhos de investigação e criação artística dos estudantes de Educação Visual.',
+      imageUrl: 'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?q=80&w=1200&auto=format&fit=crop'
+    },
+    {
+      id: '2',
+      title: 'Laboratórios & Oficinas Práticas',
+      description: 'Espaços equipados para desenvolvimento de projetos em escultura, desenho técnico, cerâmica e pintura.',
+      imageUrl: 'https://images.unsplash.com/photo-1513364776144-60967b0f800f?q=80&w=1200&auto=format&fit=crop'
+    },
+    {
+      id: '3',
+      title: 'Acervo Académico e Didático',
+      description: 'Aceda à biblioteca digital, artigos científicos, trabalhos de graduação e planos analíticos das disciplinas.',
+      imageUrl: 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?q=80&w=1200&auto=format&fit=crop'
+    }
+  ];
+
   // Custom Dynamic Console States
   const [logoUrl, setLogoUrl] = useState("up.png");
-  const [slides, setSlides] = useState<HomeSlide[]>([]);
+  const [bannerBadge, setBannerBadge] = useState("Plataforma Académica Oficial");
+  const [bannerTitle, setBannerTitle] = useState("Educação Visual & Artes");
+  const [bannerSubtitle, setBannerSubtitle] = useState("Bem-vindo ao espaço digital do departamento. Aceda a trabalhos de investigação, planos analíticos, avisos e comunique com estudantes e docentes.");
+  const [bannerBgUrl, setBannerBgUrl] = useState("");
+  const [slides, setSlides] = useState<HomeSlide[]>(defaultSlides);
+  const [currentSlide, setCurrentSlide] = useState(0);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [showNotifModal, setShowNotifModal] = useState(false);
   const [clickCount, setClickCount] = useState(0);
+
+  // States for student profile completion (for Google Login users)
+  const [showProfileCompletion, setShowProfileCompletion] = useState(false);
+  const [studentNumber, setStudentNumber] = useState('');
+  const [studentYear, setStudentYear] = useState(1);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState('');
 
   const activeNotifications = notifications.filter(n => n.id && !dismissedNotifIds.includes(n.id) && n.title !== "Utilizador Conectado");
 
@@ -161,35 +253,16 @@ const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
     };
   }, [currentUser]);
 
-  // Subscriptions for Custom Slide, Icon, Announcements and Notifications
+  // Subscriptions for Icon, Banner, Slides, Announcements and Notifications
   useEffect(() => {
-    const defaultSlides = [
-      {
-        id: 'default-1',
-        imageUrl: '',
-        title: 'Departamento de Educação Visual',
-        description: 'Espaço criativo dedicado ao ensino de belas artes, design gráfico, arquitetura e expressões geométricas na nossa universidade.'
-      },
-      {
-        id: 'default-2',
-        imageUrl: '',
-        title: 'Artes Plásticas & Técnicas Cores',
-        description: 'Explore as criações artísticas e os trabalhos de fim de curso dos nossos estudantes dedicados à inovação estética.'
-      },
-      {
-        id: 'default-3',
-        imageUrl: '',
-        title: 'Biblioteca Científica & Horários',
-        description: 'Partilha de monografias, planos curriculares e cronogramas de exames para assegurar a excelência académica.'
-      }
-    ];
-
     const unsubConfig = subscribeToSystemConfig((config) => {
       if (config.logoUrl) setLogoUrl(config.logoUrl);
+      if (config.bannerBadge !== undefined) setBannerBadge(config.bannerBadge);
+      if (config.bannerTitle !== undefined) setBannerTitle(config.bannerTitle);
+      if (config.bannerSubtitle !== undefined) setBannerSubtitle(config.bannerSubtitle);
+      if (config.bannerBgUrl !== undefined) setBannerBgUrl(config.bannerBgUrl);
       if (config.slides && config.slides.length > 0) {
         setSlides(config.slides);
-      } else {
-        setSlides(defaultSlides);
       }
     });
 
@@ -203,24 +276,96 @@ const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
     };
   }, []);
 
+  // Auto-advance slides timer
+  useEffect(() => {
+    if (slides.length <= 1) return;
+    const interval = setInterval(() => {
+      setCurrentSlide((prev) => (prev + 1) % slides.length);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [slides.length]);
+
   useEffect(() => {
     if (!currentUser) {
       setNotifications([]);
       return;
     }
+
+    // Reset session timer to only catch alerts starting from this session
+    resetPushSessionTime();
+
+    // Check if user has push enabled and request browser permission if default/unset
+    const isPushEnabled = currentUser.notificationSettings?.pushEnabled !== false;
+    if (isPushEnabled && 'Notification' in window && Notification.permission === 'default') {
+      requestNotificationPermission().catch(console.error);
+    }
+
     const unsubNotif = subscribeToMyNotifications(currentUser.id, (list) => {
       setNotifications(list);
+      // Process incoming notifications for native device/push alert
+      const pushEnabled = currentUser?.notificationSettings?.pushEnabled !== false;
+      processIncomingNotifications(list, pushEnabled);
     });
     return () => unsubNotif();
-  }, [currentUser?.id]);
+  }, [currentUser?.id, currentUser?.notificationSettings?.pushEnabled]);
+
+  const calculateYearFromNumber = (num: string): number => {
+    const parts = num.split('.');
+    if (parts.length < 3) return 1;
+    const yearSuffix = parseInt(parts[2]);
+    return isNaN(yearSuffix) ? 1 : Math.max(1, 2027 - yearSuffix);
+  };
+
+  const handleNumberChange = (val: string) => {
+    setStudentNumber(val);
+    const calculated = calculateYearFromNumber(val);
+    setStudentYear(calculated);
+  };
 
   useEffect(() => {
-    if (slides.length <= 1) return;
-    const interval = setInterval(() => {
-      setCurrentTutorialIndex((prev) => (prev + 1) % slides.length);
-    }, 6000);
-    return () => clearInterval(interval);
-  }, [slides.length]);
+    if (currentUser && currentUser.role === 'student' && !currentUser.Number) {
+      setShowProfileCompletion(true);
+    } else {
+      setShowProfileCompletion(false);
+    }
+  }, [currentUser]);
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!studentNumber.trim()) {
+      setProfileError('O número de estudante é obrigatório.');
+      return;
+    }
+    setProfileSaving(true);
+    setProfileError('');
+    try {
+      const updatedUser = {
+        ...currentUser,
+        Number: studentNumber.trim(),
+        anoFrequencia: studentYear
+      };
+      
+      // Update in Firebase
+      await updateUserFB(currentUser.id, {
+        Number: studentNumber.trim(),
+        anoFrequencia: studentYear
+      });
+
+      // Update in Local Storage
+      storage.setCachedUser(updatedUser);
+      
+      setShowProfileCompletion(false);
+      // Reload page to apply new cached info
+      window.location.reload();
+    } catch (err: any) {
+      console.error(err);
+      setProfileError('Erro ao salvar os dados: ' + err.message);
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+
 
 
   useEffect(() => {
@@ -299,7 +444,6 @@ const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
           <div 
             onClick={handleLogoClick}
             className="w-12 h-12 flex items-center justify-center hover:scale-110 active:scale-95 transition-all cursor-pointer"
-            title="D.E.V. Logo (Clique 7 vezes para modo ADM)"
           >
             {logoUrl ? (
               <img src={logoUrl} alt="Logo" className="w-full h-full object-contain drop-shadow-md rounded-2xl" />
@@ -356,6 +500,46 @@ const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
           )}
         </div>
       </header>
+
+      {/* PWA Install Promo Banner - on mobile browsers when not running in standalone mode */}
+      {!isStandalone && !isPwaDismissed && (isInstallable || isIOS) && (
+        <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-5 py-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg border-b border-white/10 relative animate-fadeIn z-50">
+          <div className="flex items-center gap-3.5 text-left w-full sm:w-auto">
+            <div className="w-10 h-10 rounded-2xl bg-white/15 flex items-center justify-center shrink-0 border border-white/10 shadow-inner">
+              <i className="fa-solid fa-mobile-screen-button text-lg text-amber-300"></i>
+            </div>
+            <div>
+              <p className="text-xs font-black uppercase tracking-wider text-amber-200">Instalar Aplicação</p>
+              <h4 className="text-sm font-black tracking-tight leading-tight mt-0.5">
+                {isIOS 
+                  ? "Adicione ao seu Ecrã Principal para ter a App completa!" 
+                  : "Deseja instalar a App no seu telemóvel (estilo APK nativo)?"}
+              </h4>
+              <p className="text-[10px] text-blue-100 mt-1 font-medium leading-normal max-w-md">
+                {isIOS 
+                  ? 'Toque no ícone "Partilhar" (seta para cima) no fundo do Safari e escolha "Adicionar ao Ecrã Principal".'
+                  : "Terá acesso instantâneo no ecrã inicial, sem barra de navegação do browser, exatamente como uma App nativa."}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+            {!isIOS && isInstallable && (
+              <button 
+                onClick={handleInstallClick}
+                className="bg-amber-400 hover:bg-amber-500 active:scale-95 transition-all text-slate-950 px-5 py-2 rounded-2xl font-black text-xs uppercase tracking-wider shadow-md w-full sm:w-auto text-center"
+              >
+                Instalar Agora
+              </button>
+            )}
+            <button 
+              onClick={handleDismissPwaBanner}
+              className="px-4 py-2 bg-white/10 hover:bg-white/15 active:scale-95 transition-all rounded-2xl text-xs font-black uppercase tracking-wider text-white/80 hover:text-white border border-white/5 w-full sm:w-auto text-center"
+            >
+              Mais Tarde
+            </button>
+          </div>
+        </div>
+      )}
 
       <nav className="bg-ev-blue border-t border-white/10 shadow-lg relative z-40">
         <div className="flex flex-wrap">
@@ -423,66 +607,77 @@ const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
         )}
       </nav>
 
-      <section className="w-full bg-gradient-to-b from-ev-blue to-blue-900 py-16 px-6 relative overflow-hidden shadow-inner">
-        <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
-        <div className="absolute bottom-0 left-0 w-64 h-64 bg-black/10 rounded-full blur-3xl translate-y-1/2 -translate-x-1/2"></div>
-        
-        <div className="max-w-6xl mx-auto relative z-10">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl md:text-4xl font-black text-white mb-4 uppercase tracking-tighter">
-              Bem-vindo à Plataforma
-            </h2>
-            <p className="text-blue-100 max-w-2xl mx-auto text-sm md:text-base">
-              Explore todas as funcionalidades desenvolvidas para facilitar a comunicação e partilha de recursos no Departamento de Educação Visual.
-            </p>
-          </div>
-
-          <div className="relative w-full max-w-lg mx-auto aspect-video sm:aspect-[16/10] min-h-[260px] sm:min-h-[320px] rounded-3xl overflow-hidden shadow-2xl border border-white/15">
-            {slides.map((slide, index) => (
-              <div 
-                key={slide.id || index} 
-                className={`absolute inset-0 flex flex-col justify-end p-6 md:p-8 transition-opacity duration-1000 ease-in-out ${
-                  currentTutorialIndex === index ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
-                }`}
-                style={slide.imageUrl ? {
-                  backgroundImage: `linear-gradient(to top, rgba(15, 23, 42, 0.95) 0%, rgba(15, 23, 42, 0.4) 50%, rgba(15, 23, 42, 0) 100%), url(${slide.imageUrl})`,
-                  backgroundSize: 'cover',
-                  backgroundPosition: 'center'
-                } : {}}
-              >
-                {!slide.imageUrl && (
-                  <div className="absolute inset-0 bg-gradient-to-br from-ev-blue to-slate-900 opacity-95 flex items-center justify-center -z-10">
-                    <i className="fa-solid fa-graduation-cap text-[120px] text-white/5 absolute transform -rotate-12 translate-x-10 -translate-y-10"></i>
+      <main className="w-full p-4 sm:p-6 space-y-8 sm:space-y-12 py-8 sm:py-10 relative z-0">
+        {/* Carrossel de Destaques / Slides */}
+        {slides.length > 0 && (
+          <section className="bg-white dark:bg-gray-800 rounded-5xl shadow-xl overflow-hidden border border-gray-100 dark:border-gray-700 animate-fadeIn relative group">
+            <div className="relative h-64 sm:h-80 md:h-96 w-full overflow-hidden bg-slate-950">
+              {slides.map((slide, index) => (
+                <div
+                  key={slide.id || index}
+                  className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${
+                    index === currentSlide ? 'opacity-100 z-10 pointer-events-auto' : 'opacity-0 z-0 pointer-events-none'
+                  }`}
+                >
+                  <img
+                    src={slide.imageUrl}
+                    alt={slide.title}
+                    className="w-full h-full object-cover object-center"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent flex flex-col justify-end p-6 sm:p-8 md:p-10">
+                    <div className="max-w-2xl space-y-2 text-white">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/30 backdrop-blur-md text-amber-300 text-[10px] font-black uppercase tracking-widest mb-1">
+                        <Sparkles size={12} /> Destaque Académico
+                      </span>
+                      <h3 className="text-xl sm:text-2xl md:text-3xl font-black uppercase tracking-tight leading-snug drop-shadow-md">
+                        {slide.title}
+                      </h3>
+                      {slide.description && (
+                        <p className="text-xs sm:text-sm text-gray-200 line-clamp-2 leading-relaxed font-medium">
+                          {slide.description}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                )}
-                <div className="space-y-2 text-left z-10">
-                  <h3 className="text-white font-black text-xl md:text-2xl uppercase tracking-tight drop-shadow-md">
-                    {slide.title}
-                  </h3>
-                  <p className="text-blue-100 text-xs md:text-sm leading-relaxed font-medium drop-shadow-sm line-clamp-3">
-                    {slide.description}
-                  </p>
                 </div>
-              </div>
-            ))}
-          </div>
-          
-          <div className="flex justify-center gap-2 mt-6">
-            {slides.map((_, index) => (
-              <button
-                key={index}
-                onClick={() => setCurrentTutorialIndex(index)}
-                className={`h-2.5 rounded-full transition-all duration-300 ${
-                  currentTutorialIndex === index ? 'w-6 bg-white' : 'w-2.5 bg-white/30 hover:bg-white/50'
-                }`}
-                aria-label={`Ver slide ${index + 1}`}
-              />
-            ))}
-          </div>
-        </div>
-      </section>
+              ))}
 
-      <main className="w-full p-6 space-y-12 py-10">
+              {/* Navigation Controls */}
+              {slides.length > 1 && (
+                <>
+                  <button
+                    onClick={() => setCurrentSlide((prev) => (prev - 1 + slides.length) % slides.length)}
+                    className="absolute left-4 top-1/2 -translate-y-1/2 z-20 w-10 h-10 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 flex items-center justify-center transition-all opacity-80 group-hover:opacity-100 shadow-xl"
+                    aria-label="Slide anterior"
+                  >
+                    <ChevronLeft size={20} />
+                  </button>
+                  <button
+                    onClick={() => setCurrentSlide((prev) => (prev + 1) % slides.length)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 z-20 w-10 h-10 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 flex items-center justify-center transition-all opacity-80 group-hover:opacity-100 shadow-xl"
+                    aria-label="Próximo slide"
+                  >
+                    <ChevronRight size={20} />
+                  </button>
+
+                  {/* Dots Indicator */}
+                  <div className="absolute bottom-4 right-6 z-20 flex items-center gap-2">
+                    {slides.map((_, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setCurrentSlide(idx)}
+                        className={`h-2.5 rounded-full transition-all ${
+                          idx === currentSlide ? 'w-8 bg-amber-400 shadow-md' : 'w-2.5 bg-white/50 hover:bg-white/80'
+                        }`}
+                        aria-label={`Ir para slide ${idx + 1}`}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+        )}
         {/* Mural de Anúncios e Avisos */}
         {announcements.length > 0 && (
           <section className="bg-white dark:bg-gray-800 rounded-5xl shadow-xl p-8 border border-gray-100 dark:border-gray-700 animate-fadeIn space-y-6">
@@ -506,8 +701,8 @@ const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
                     <span className="text-[8px] font-black tracking-widest text-amber-600 uppercase">
                       {new Date(ann.createdAt).toLocaleDateString()}
                     </span>
-                    <h4 className="text-xs font-black text-slate-900 dark:text-white uppercase truncate">{ann.title}</h4>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
+                    <h4 className="text-xs font-black text-slate-900 dark:text-white uppercase leading-snug">{ann.title}</h4>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
                       {ann.text}
                     </p>
                   </div>
@@ -632,6 +827,86 @@ const Home: React.FC<HomeProps> = ({ toggleTheme, isDark, onLogout }) => {
                 ))
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Conclusão de Perfil para login Google */}
+      {showProfileCompletion && (
+        <div className="fixed inset-0 z-[110] bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-white dark:bg-gray-800 border border-gray-150 dark:border-gray-750 rounded-5xl p-8 shadow-2xl relative overflow-hidden text-slate-900 dark:text-slate-100 animate-zoomIn">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-ev-blue/5 dark:bg-blue-500/5 rounded-full blur-3xl pointer-events-none"></div>
+            
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-blue-100 to-indigo-50 dark:from-blue-950 dark:to-slate-900 text-ev-blue dark:text-blue-400 flex items-center justify-center shadow-inner border border-blue-200/50 dark:border-blue-800/30 mx-auto mb-4">
+                <i className="fa-solid fa-user-pen text-3xl drop-shadow-sm"></i>
+              </div>
+              <h3 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-tighter">
+                Completar Perfil de Estudante
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 font-medium max-w-sm mx-auto">
+                Olá, <span className="font-bold text-ev-blue dark:text-blue-400">{currentUser?.name}</span>! Como entrou com a conta Google, precisamos do seu Número de Estudante para determinar o seu ano académico e dar-lhe acesso aos canais correspondentes.
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveProfile} className="space-y-5">
+              {profileError && (
+                <div className="p-4 bg-red-50 dark:bg-red-950/40 border border-red-250 dark:border-red-900/50 rounded-2xl text-[11px] font-bold text-red-600 dark:text-red-400 text-center uppercase tracking-wide">
+                  <i className="fa-solid fa-circle-exclamation inline-block mr-1"></i> {profileError}
+                </div>
+              )}
+
+              <div className="space-y-1.5 text-left">
+                <label className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest">
+                  Número de Estudante
+                </label>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500">
+                    <i className="fa-solid fa-id-card text-xs"></i>
+                  </span>
+                  <input 
+                    type="text"
+                    required
+                    placeholder="Ex: 1.2.24"
+                    value={studentNumber}
+                    onChange={(e) => handleNumberChange(e.target.value)}
+                    className="w-full pl-11 pr-4 py-3.5 bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-650 rounded-2xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-ev-blue dark:focus:ring-blue-500"
+                  />
+                </div>
+                <p className="text-[9px] text-gray-400 dark:text-gray-500 font-medium">
+                  Use o formato oficial com pontos (Ex: 1.2.24). O ano é detetado a partir deste número.
+                </p>
+              </div>
+
+              <div className="space-y-1.5 text-left">
+                <label className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest">
+                  Ano de Frequência Calculado
+                </label>
+                <select 
+                  value={studentYear}
+                  onChange={(e) => setStudentYear(Number(e.target.value))}
+                  className="w-full px-4 py-3.5 bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-650 rounded-2xl text-xs font-bold focus:outline-none focus:ring-2 focus:ring-ev-blue dark:focus:ring-blue-500 text-slate-800 dark:text-white"
+                >
+                  <option value={1}>1º Ano Curricular</option>
+                  <option value={2}>2º Ano Curricular</option>
+                  <option value={3}>3º Ano Curricular</option>
+                  <option value={4}>4º Ano Curricular</option>
+                </select>
+              </div>
+
+              <button
+                type="submit"
+                disabled={profileSaving}
+                className="w-full bg-gradient-to-r from-ev-blue to-blue-900 text-white font-black text-[10px] uppercase tracking-widest py-4 rounded-2xl hover:opacity-95 transition-all shadow-lg active:scale-98 disabled:opacity-50"
+              >
+                {profileSaving ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <i className="fa-solid fa-spinner animate-spin"></i>
+                    A Gravar Perfil...
+                  </span>
+                ) : 'Gravar e Entrar'}
+              </button>
+            </form>
           </div>
         </div>
       )}
